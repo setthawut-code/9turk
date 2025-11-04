@@ -1,7 +1,7 @@
 
 const { useState, useEffect, useMemo, useRef } = React;
 const LS_KEY = "patientNotes.v6";
-const APP_VERSION = "3.0.0-autosync";
+const APP_VERSION = "3.0.1-autosync-fix1";
 
 // --- Utils ---
 const nowISO = () => new Date().toISOString();
@@ -224,7 +224,7 @@ function PatientEditor({ patient, onChange, onRemove }){
 
 function NewNoteForm({ onAdd }){
   const [m,setM]=useState({ timestamp: nowISO(), author:"", vitals:{}, soap:{S:"",O:"",A:"",P:""}, meds:"", attachments:[] });
-  const toLocal=(iso)=>{const d=new Date(iso),p=n=>String(n).padStart(2,"0");return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes()}`};
+  const toLocal=(iso)=>{const d=new Date(iso),p=n=>String(n).padStart(2,"0");return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`};
   return (
     <div>
       <div className="grid md:grid-cols-3 gap-3 mb-3">

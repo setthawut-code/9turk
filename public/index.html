@@ -9,6 +9,20 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/crypto-js.min.js"></script>
+  <script>
+    // very small runtime error badge to avoid "white screen" silent failures
+    window.addEventListener('error', (e)=>{
+      const msg = String(e?.error?.message || e?.message || 'Unknown error');
+      const el = document.createElement('div');
+      el.style.position='fixed'; el.style.bottom='12px'; el.style.right='12px';
+      el.style.zIndex='99999'; el.style.background='#fee2e2'; el.style.color='#991b1b';
+      el.style.padding='10px 12px'; el.style.border='1px solid #fecaca'; el.style.borderRadius='12px';
+      el.style.boxShadow='0 6px 18px rgba(0,0,0,.12)'; el.style.fontFamily='ui-sans-serif,system-ui';
+      el.style.fontSize='12px'; el.textContent='App error: '+msg;
+      document.body.appendChild(el);
+      console.error('App runtime error:', e.error || e);
+    });
+  </script>
 </head>
 <body class="bg-neutral-50">
   <div id="root"></div>
