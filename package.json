@@ -1,0 +1,16 @@
+{
+  "name": "progress-notes-localfirst",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@netlify/blobs": "^8.0.0"
+  },
+  "devDependencies": {
+    "netlify-cli": "^17.34.2"
+  },
+  "scripts": {
+    "dev": "netlify dev",
+    "deploy": "netlify deploy --prod --dir=.",
+    "serve": "npx http-server -p 8080 ."
+  }
+}
