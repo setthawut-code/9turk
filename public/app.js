@@ -1,7 +1,7 @@
 
 const { useState, useEffect, useMemo } = React;
 const LS_KEY = "patientNotes.v4";
-const APP_VERSION = "2.1.0-netlify-structured";
+const APP_VERSION = "2.1.1-netlify-structured-fix";
 
 // Utils
 const nowISO = () => new Date().toISOString();
@@ -278,9 +278,14 @@ function GroupSharePanel({ store, setStore, passphrase }){
 
   const onPush=async()=>{
     if(!gid||!gpass){alert("ตั้งชื่อและรหัสก่อน");return;}
-    const payload=(store.settings.encryptionEnabled && passphrase) ? aesEncrypt(jp(store), passphrase)
-                  : {type:"pn_export",version:1,data:store,createdAt:nowISO()};
-    const r=await api(`/api/group?id=${encodeURIComponent(gid)}`,{method:"PUT",headers:{"x-pass":gpass},body:jp({version:1,payload})});
+    const payload=(store.settings.encryptionEnabled && passphrase)
+      ? aesEncrypt(jp(store), passphrase)
+      : store; // send raw state
+    const r=await api(`/api/group?id=${encodeURIComponent(gid)}`,{
+      method:"PUT",
+      headers:{"x-pass":gpass},
+      body:jp({version:1,payload}),
+    });
     if(!r.ok){ alert("อัปเดตไม่สำเร็จ: "+(r.body?.error||r.status)); return; }
     alert("อัปเดตสำเร็จ");
   };
@@ -289,18 +294,21 @@ function GroupSharePanel({ store, setStore, passphrase }){
     if(!gid||!gpass){alert("ตั้งชื่อและรหัสก่อน");return;}
     const r=await api(`/api/group?id=${encodeURIComponent(gid)}`,{headers:{"x-pass":gpass}});
     if(!r.ok){ alert("ดึงไม่สำเร็จ: "+(r.body?.error||r.status)); return; }
-    const j=r.body;
-    const enc=j?.payload;
-    if(enc?.enc){
+    const pl = r.body?.payload;
+
+    if(pl?.enc){
       if(!passphrase){alert("ข้อมูลถูกเข้ารหัส — ตั้งรหัสใน Settings ก่อน");return;}
-      const s=aesDecrypt(enc, passphrase); if(!s){alert("ถอดรหัสไม่สำเร็จ");return;}
-      const data=parse(s); if(!data?.patients||!data?.notes){alert("โครงสร้างข้อมูลไม่ถูกต้อง");return;}
-      setStore(data); alert("ดึง + ถอดรหัสสำเร็จ");
-    }else{
-      if(!j?.payload?.patients||!j?.payload?.notes){alert("payload ไม่ถูกต้อง");return;}
-      if(!confirm("ข้อมูลไม่เข้ารหัส จะเขียนทับในเครื่องทันที ดำเนินการต่อ?")) return;
-      setStore(j.payload); alert("ดึงสำเร็จ");
+      const s=aesDecrypt(pl, passphrase); if(!s){alert("ถอดรหัสไม่สำเร็จ");return;}
+      const data=parse(s); if(!data?.patients||!data?.notes){alert("payload ไม่ถูกต้อง");return;}
+      setStore(data); alert("ดึง + ถอดรหัสสำเร็จ"); return;
     }
+
+    const data = (pl?.patients && pl?.notes) ? pl
+                : (pl?.data && pl.data.patients && pl.data.notes) ? pl.data
+                : null;
+    if(!data){ alert("payload ไม่ถูกต้อง ต้อง ดึง กลุ่ม อีกครั้ง"); return; }
+    if(!confirm("ข้อมูลจะเขียนทับในเครื่อง ดำเนินการต่อ?")) return;
+    setStore(data); alert("ดึงสำเร็จ");
   };
 
   return (
@@ -313,7 +321,7 @@ function GroupSharePanel({ store, setStore, passphrase }){
         </div>
         <div className="flex flex-wrap gap-2">
           <button className="px-3 py-2 rounded-xl bg-black text-white" onClick={onCreate}>สร้าง</button>
-          <button className="px-3 py-2 rounded-xl bg-white border" onClick={save}>บันทึก</button>
+          <button className="px-3 py-2 rounded-xl bg-white border" onClick={()=>save()}>บันทึก</button>
           <button className="px-3 py-2 rounded-xl bg-white border" onClick={onPull}>ดึง</button>
           <button className="px-3 py-2 rounded-xl bg-white border" onClick={onPush}>อัปเดต</button>
         </div>
