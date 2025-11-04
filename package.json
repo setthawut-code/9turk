@@ -1,5 +1,5 @@
 {
-  "name": "progress-notes-localfirst",
+  "name": "progress-notes-simplegroup-compact",
   "private": true,
   "type": "module",
   "dependencies": {
@@ -10,7 +10,6 @@
   },
   "scripts": {
     "dev": "netlify dev",
-    "deploy": "netlify deploy --prod --dir=.",
-    "serve": "npx http-server -p 8080 ."
+    "deploy": "netlify deploy --prod --dir=."
   }
 }
