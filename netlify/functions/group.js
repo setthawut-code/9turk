@@ -1,4 +1,4 @@
-// netlify/functions/group.js — blobs v8 JSON helpers + optimistic concurrency (409)
+// netlify/functions/group.js — blobs v8 + optimistic concurrency (409)
 import { getStore } from "@netlify/blobs";
 import crypto from "node:crypto";
 

@@ -1,16 +1,23 @@
 
-const { useState, useEffect, useMemo } = React;
-const LS_KEY = "patientNotes.v5";
-const APP_VERSION = "2.5.0-rt-poll-409-leave";
+const { useState, useEffect, useMemo, useRef } = React;
+const LS_KEY = "patientNotes.v6";
+const APP_VERSION = "3.0.0-autosync";
 
-// Utils
+// --- Utils ---
 const nowISO = () => new Date().toISOString();
 const fmt = (iso) => new Date(iso).toLocaleString();
 const uid = () => (crypto?.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2));
 const jp = (o) => JSON.stringify(o);
 const parse = (s)=>{try{return JSON.parse(s)}catch{return null}};
 
-// Minimal AES (optional local encryption)
+// Simple stable hash for JSON (djb2)
+function hashString(s){
+  let h = 5381;
+  for (let i=0;i<s.length;i++){ h = ((h << 5) + h) + s.charCodeAt(i); h|=0; }
+  return (h>>>0).toString(36);
+}
+
+// AES helpers (optional local encryption)
 function aesEncrypt(s, pass) {
   const salt = CryptoJS.lib.WordArray.random(16);
   const iv   = CryptoJS.lib.WordArray.random(16);
@@ -33,10 +40,9 @@ const defaults = () => ({
   settings: { encryptionEnabled:false, group:{ id:"", pass:"" } }
 });
 
-// Merge helper — no overwrite; resolve by updatedAt/timestamp
+// Merge helper — prefer newer by updatedAt/timestamp
 function mergeState(local, incoming){
   const out = JSON.parse(JSON.stringify(local||defaults()));
-
   const pMap = new Map(out.patients.map(p=>[p.id,p]));
   for(const p of (incoming.patients||[])){
     const ex = pMap.get(p.id);
@@ -60,9 +66,10 @@ function mergeState(local, incoming){
     }
   }
   out.notes = Array.from(nMap.values());
-  return { merged: out };
+  return out;
 }
 
+// Storage
 const Storage = {
   load(pass){
     const raw = localStorage.getItem(LS_KEY); if(!raw) return defaults();
@@ -85,10 +92,11 @@ const Storage = {
   clear(){ localStorage.removeItem(LS_KEY); }
 };
 
-// Small UI atoms
+// UI atoms
 const Input = (p)=>(<input {...p} className={"w-full border rounded-xl px-3 py-2 "+(p.className||"")} />);
 const TA    = (p)=>(<textarea {...p} className={"w-full border rounded-xl px-3 py-2 "+(p.className||"")} />);
 
+// File helpers
 async function fileToDataUrl(file){return await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result));r.onerror=rej;r.readAsDataURL(file);});}
 const fmtBytes=(b)=>{const u=["B","KB","MB"];let i=0,n=b;while(n>=1024&&i<u.length-1){n/=1024;i++}return `${n.toFixed(n<10&&i>0?1:0)} ${u[i]}`};
 
@@ -123,12 +131,14 @@ function AttachmentManager({items,onAdd,onRemove}){
   );
 }
 
-// ---- API helper with fallback + non-throwing result {ok,status,body} ----
+// API helper with cache-busting + no-store
 async function api(url, init = {}) {
+  const bust = (u)=> u + (u.includes("?") ? "&" : "?") + "_ts=" + Date.now();
   const doFetch = (u) =>
-    fetch(u, {
+    fetch(bust(u), {
       ...init,
-      headers: { "Content-Type": "application/json", ...(init.headers || {}) },
+      cache: "no-store",
+      headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...(init.headers || {}) },
     });
   let res = await doFetch(url);
   if ((res.status === 404 || res.status === 502) && url.startsWith("/api/")) {
@@ -139,8 +149,8 @@ async function api(url, init = {}) {
   let body; try { body = JSON.parse(text); } catch { body = { _raw: text }; }
   return { ok: res.ok, status: res.status, body };
 }
-// ----------------------------------------------------------------------
 
+// --- Editors ---
 function PatientEditor({ patient, onChange, onRemove }){
   const withDef = (p)=>({
     color:"#22c55e", cc:"", ud:"",
@@ -149,7 +159,7 @@ function PatientEditor({ patient, onChange, onRemove }){
   });
   const [m,setM]=useState(withDef(patient));
   useEffect(()=>setM(withDef(patient)),[patient]);
-  useEffect(()=>{const t=setTimeout(()=>onChange(m),200); return ()=>clearTimeout(t);},[m]);
+  useEffect(()=>{const t=setTimeout(()=>onChange(m),250); return ()=>clearTimeout(t);},[m]);
 
   const set=(patch)=>setM(v=>({...v,...patch, updatedAt: nowISO()}));
   const setHx=(k,val)=>setM(v=>({...v,updatedAt: nowISO(),hx:{...v.hx,[k]:val}}));
@@ -214,7 +224,7 @@ function PatientEditor({ patient, onChange, onRemove }){
 
 function NewNoteForm({ onAdd }){
   const [m,setM]=useState({ timestamp: nowISO(), author:"", vitals:{}, soap:{S:"",O:"",A:"",P:""}, meds:"", attachments:[] });
-  const toLocal=(iso)=>{const d=new Date(iso),p=n=>String(n).padStart(2,"0");return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`};
+  const toLocal=(iso)=>{const d=new Date(iso),p=n=>String(n).padStart(2,"0");return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes()}`};
   return (
     <div>
       <div className="grid md:grid-cols-3 gap-3 mb-3">
@@ -232,11 +242,8 @@ function NewNoteForm({ onAdd }){
         <h3 className="font-semibold mb-2">ไฟล์แนบของโน้ตนี้</h3>
         <AttachmentManager items={m.attachments}
           onAdd={(arr)=>setM(v=>({...v,attachments:[...(v.attachments||[]),...arr]}))}
-          onRemove={(id)=>setM(v=>({...v,attachments:(v.attachments||[]).filter(x=>x.id!==id)}))}/>
-      </div>
-      <div className="mt-3">
-        <button className="px-3 py-2 rounded-xl bg-black text-white" onClick={()=>onAdd({...m, timestamp: nowISO(), updatedAt: nowISO()})}>บันทึก</button>
-      </div>
+          onRemove={(id)=>setM(v=>({...v,attachments:(v.attachments||[]).filter(x=>x.id!==id)}))}/></div>
+      <div className="mt-3"><button className="px-3 py-2 rounded-xl bg-black text-white" onClick={()=>onAdd({...m, timestamp: nowISO(), updatedAt: nowISO()})}>บันทึก</button></div>
     </div>
   );
 }
@@ -293,17 +300,23 @@ function NoteRow({ note, patient, onEdit, onDelete }){
   );
 }
 
-function GroupSharePanel({ store, setStore, passphrase }){
+// --- Group (AutoSync) ---
+function GroupAutoSync({ store, setStore, passphrase }){
   const [gid,setGid]=useState(store.settings.group?.id||"");
   const [gpass,setGp]=useState(store.settings.group?.pass||"");
-  const [sel, setSel] = useState(new Set()); // selected patients to share
+  const [sel, setSel] = useState(new Set(store.patients.map(p=>p.id))); // which patients to share
   const [lastVersion, setLastVersion] = useState(0);
+  const [status, setStatus] = useState("idle"); // idle | pulling | pushing | conflicted | error
+  const lastHashRef = useRef(""); // last pushed subset hash
+  const pushTimer = useRef(null);
+  const pullingRef = useRef(false);
+  const joined = !!gid && !!gpass;
 
   useEffect(()=>{ setSel(new Set(store.patients.map(p=>p.id))); }, [store.patients.length]);
 
-  const toggle = (id)=> setSel(prev => { const s=new Set(prev); s.has(id)?s.delete(id):s.add(id); return s; });
   const selectAll = ()=> setSel(new Set(store.patients.map(p=>p.id)));
   const clearAll = ()=> setSel(new Set());
+  const toggleSel = (id)=> setSel(s=>{const n=new Set(s); n.has(id)?n.delete(id):n.add(id); return n;});
 
   const fetchMeta = async (id) => {
     const r = await api(`/api/group_meta?id=${encodeURIComponent(id)}`);
@@ -311,99 +324,133 @@ function GroupSharePanel({ store, setStore, passphrase }){
     return 0;
   };
 
-  const onCreate=async()=>{
-    if(!/^[A-Za-z0-9_-]{3,40}$/.test(gid)){alert("ชื่อกรุ๊ปไม่ถูกต้อง");return;}
-    if(!gpass){alert("ใส่รหัสกรุ๊ป");return;}
-    const r=await api("/api/group",{method:"POST",body:jp({id:gid,pass:gpass})});
-    if(r.status===201){ await saveJoin(); alert("สร้างกรุ๊ปแล้ว และเข้าร่วมเรียบร้อย"); }
-    else if(r.status===409){ alert("ชื่อกรุ๊ปนี้ถูกใช้แล้ว"); }
-    else { alert("สร้างไม่สำเร็จ: "+(r.body?.error||r.status)); }
-  };
-
-  const saveJoin = async ()=>{
-    setStore(s=>({...s,settings:{...s.settings,group:{id:gid,pass:gpass}}}));
-    const ver = await fetchMeta(gid);
-    setLastVersion(ver || 0);
-    await onPull();
-  };
-
-  const sanitizePatient = (p)=>{ const {__groupId, ...rest} = p; return rest; };
-  const sanitizeNote = (n)=>{ const {__groupId, ...rest} = n; return rest; };
-
   const buildSubset = ()=>{
     const ids = Array.from(sel);
-    const patients = store.patients.filter(p=>ids.includes(p.id)).map(sanitizePatient);
-    const notes = store.notes.filter(n=>ids.includes(n.patientId)).map(sanitizeNote);
-    return { mode:"merge", version:1, updatedAt: nowISO(), patients, notes };
-  }
+    const idSet = new Set(ids);
+    // stable order
+    const patients = store.patients.filter(p=>idSet.has(p.id)).slice().sort((a,b)=>a.id.localeCompare(b.id));
+    const notes = store.notes.filter(n=>idSet.has(n.patientId)).slice().sort((a,b)=> (a.patientId+a.id).localeCompare(b.patientId+b.id));
+    // strip local-only fields
+    const sPat = patients.map(({__groupId, ...rest})=>rest);
+    const sNot = notes.map(({__groupId, ...rest})=>rest);
+    return { mode:"merge", version:1, updatedAt: nowISO(), patients:sPat, notes:sNot };
+  };
 
-  const onPush=async()=>{
-    if(!gid||!gpass){alert("ตั้งชื่อและรหัสก่อน");return;}
-    if(sel.size===0){ alert("เลือกผู้ป่วยที่จะแชร์ก่อน"); return; }
-    const subset = buildSubset();
-    const payload=(store.settings.encryptionEnabled && passphrase)
-      ? aesEncrypt(jp(subset), passphrase)
-      : subset;
+  const computeHash = ()=> hashString(jp(buildSubset()));
 
-    const meta = await api(`/api/group_meta?id=${encodeURIComponent(gid)}`);
-    const baseVersion = meta.ok ? Number(meta.body?.version||0) : 0;
+  const join = async ()=>{
+    if(!/^[A-Za-z0-9_-]{3,40}$/.test(gid)){ alert("ชื่อกรุ๊ปไม่ถูกต้อง"); return; }
+    if(!gpass){ alert("ใส่รหัสกรุ๊ป"); return; }
+    setStore(s=>({...s, settings:{...s.settings, group:{id:gid, pass:gpass}}}));
+    const ver = await fetchMeta(gid);
+    setLastVersion(ver||0);
+    await pull(); // initial merge
+  };
 
-    const r=await api(`/api/group?id=${encodeURIComponent(gid)}`,{
-      method:"PUT",
-      headers:{"x-pass":gpass},
-      body:jp({version:1, baseVersion, payload}),
-    });
-    if(r.status===409){
-      await onPull();
-      alert("มีคนอัปเดตก่อนคุณ — ดึงข้อมูลล่าสุดมารวมแล้ว ลองกดอัปเดตอีกครั้ง");
-      return;
-    }
-    if(!r.ok){ alert("อัปเดตไม่สำเร็จ: "+(r.body?.error||r.status)); return; }
-    const newVer = Number(r.body?.version||0);
-    if(newVer) setLastVersion(newVer);
-    alert("อัปเดต (แชร์เฉพาะที่เลือก) สำเร็จ");
+  const create = async ()=>{
+    if(!/^[A-Za-z0-9_-]{3,40}$/.test(gid)){ alert("ชื่อกรุ๊ปไม่ถูกต้อง"); return; }
+    if(!gpass){ alert("ใส่รหัสกรุ๊ป"); return; }
+    const r=await api("/api/group",{method:"POST",body:jp({id:gid,pass:gpass})});
+    if(r.status===201){ await join(); alert("สร้างและเข้าร่วมแล้ว"); }
+    else if(r.status===409){ alert("ชื่อกรุ๊ปถูกใช้แล้ว"); }
+    else { alert("สร้างไม่สำเร็จ: "+(r.body?.error||r.status)); }
   };
 
   const tagIncoming = (arr)=> (arr||[]).map(x=> ({...x, __groupId: gid}));
 
-  const onPull=async()=>{
-    if(!gid||!gpass){alert("ตั้งชื่อและรหัสก่อน");return;}
+  const pull = async ()=>{
+    if(!joined) return;
+    if(pullingRef.current) return;
+    pullingRef.current = true;
+    setStatus("pulling");
     const r=await api(`/api/group?id=${encodeURIComponent(gid)}`,{headers:{"x-pass":gpass}});
-    if(!r.ok){ alert("ดึงไม่สำเร็จ: "+(r.body?.error||r.status)); return; }
+    if(!r.ok){ setStatus("error"); pullingRef.current=false; return; }
     const pl = r.body?.payload;
+    let incoming = null;
 
     if(pl?.enc){
-      if(!passphrase){alert("ข้อมูลถูกเข้ารหัส — ตั้งรหัสใน Settings ก่อน");return;}
-      const s=aesDecrypt(pl, passphrase); if(!s){alert("ถอดรหัสไม่สำเร็จ");return;}
-      const incoming=parse(s); if(!incoming){alert("payload ไม่ถูกต้อง");return;}
-      const data = incoming.data? incoming.data : incoming;
-      const tagged = { patients: tagIncoming(data.patients), notes: tagIncoming(data.notes) };
-      const { merged } = mergeState(store, tagged);
-      setStore(merged);
-      setLastVersion(Number(r.body?.version||0));
-      return;
-    }
-
-    let incoming = null;
-    if(pl?.mode==="merge" && (pl.patients||pl.notes)){
+      if(!passphrase){ setStatus("error"); pullingRef.current=false; alert("ข้อมูลเข้ารหัส—ตั้งรหัสใน Settings ก่อน"); return; }
+      const s=aesDecrypt(pl, passphrase); if(!s){ setStatus("error"); pullingRef.current=false; alert("ถอดรหัสไม่สำเร็จ"); return; }
+      const obj=parse(s); const data = obj?.data||obj;
+      incoming = { patients: tagIncoming(data.patients||[]), notes: tagIncoming(data.notes||[]) };
+    }else if(pl?.mode==="merge"){
       incoming = { patients: tagIncoming(pl.patients||[]), notes: tagIncoming(pl.notes||[]) };
     }else if(pl?.patients && pl?.notes){
       incoming = { patients: tagIncoming(pl.patients), notes: tagIncoming(pl.notes) };
     }else if(pl?.data && pl.data.patients && pl.data.notes){
       incoming = { patients: tagIncoming(pl.data.patients), notes: tagIncoming(pl.data.notes) };
     }
-    if(!incoming){ alert("payload ไม่ถูกต้อง"); return; }
 
-    const { merged } = mergeState(store, incoming);
-    setStore(merged);
-    setLastVersion(Number(r.body?.version||0));
+    if(incoming){
+      setStore(s=>mergeState(s, incoming));
+      setLastVersion(Number(r.body?.version||0));
+      // after pull, align pushed hash with current subset
+      lastHashRef.current = computeHash();
+      setStatus("idle");
+    }else{
+      setStatus("error");
+    }
+    pullingRef.current = false;
   };
 
-  // Leave group (keep data) and Leave+Purge (remove local data from this group)
+  const push = async ()=>{
+    if(!joined) return;
+    setStatus("pushing");
+    const subset = buildSubset();
+    const payload=(store.settings.encryptionEnabled && passphrase)
+      ? aesEncrypt(jp(subset), passphrase)
+      : subset;
+    const meta = await api(`/api/group_meta?id=${encodeURIComponent(gid)}`);
+    const baseVersion = meta.ok ? Number(meta.body?.version||0) : 0;
+    const r=await api(`/api/group?id=${encodeURIComponent(gid)}`,{
+      method:"PUT", headers:{"x-pass":gpass}, body:jp({version:1, baseVersion, payload})
+    });
+    if(r.status===409){
+      setStatus("conflicted");
+      await pull();
+      // re-evaluate hash
+      lastHashRef.current = computeHash();
+      setStatus("idle");
+      return;
+    }
+    if(!r.ok){ setStatus("error"); return; }
+    // success
+    const newVer = Number(r.body?.version||0);
+    if(newVer) setLastVersion(newVer);
+    lastHashRef.current = computeHash();
+    setStatus("idle");
+  };
+
+  // Auto-poll meta → pull when remote version changes
+  useEffect(()=>{
+    if(!joined) return;
+    let alive = true;
+    const tick = async ()=>{
+      const r = await api(`/api/group_meta?id=${encodeURIComponent(gid)}`);
+      const ver = Number(r.body?.version||0);
+      if(alive && r.ok && ver && ver !== lastVersion){
+        await pull();
+      }
+    };
+    const t = setInterval(tick, 4000);
+    return ()=>{ alive = false; clearInterval(t); };
+  }, [joined, gid, gpass, lastVersion]);
+
+  // Auto-push when local subset changed (debounced)
+  useEffect(()=>{
+    if(!joined) return;
+    const currentHash = computeHash();
+    if(currentHash === lastHashRef.current) return;
+    if(pushTimer.current) clearTimeout(pushTimer.current);
+    pushTimer.current = setTimeout(()=>{ push(); }, 1200);
+    return ()=>{ if(pushTimer.current) clearTimeout(pushTimer.current); };
+  }, [store.patients, store.notes, Array.from(sel).join(","), joined]);
+
+  // Leave group
   const leaveKeep = ()=>{
     setStore(s=>({...s, settings:{...s.settings, group:{id:"", pass:""}}}));
     setGid(""); setGp(""); setLastVersion(0);
-    alert("ออกกลุ่มแล้ว (คงข้อมูลไว้ในเครื่อง)");
+    setStatus("idle");
   };
   const leaveAndPurge = ()=>{
     if(!gid){ alert("ยังไม่ได้อยู่ในกลุ่ม"); return; }
@@ -416,27 +463,21 @@ function GroupSharePanel({ store, setStore, passphrase }){
       return { ...s, patients: remainingPatients, notes: remainingNotes, settings:{...s.settings, group:{id:"", pass:""}} };
     });
     setGid(""); setGp(""); setLastVersion(0);
-    alert("ออกกลุ่มและลบข้อมูลจากกลุ่มแล้ว");
+    setStatus("idle");
   };
 
-  useEffect(()=>{
-    if(!gid) return;
-    let alive = true;
-    const tick = async ()=>{
-      const r = await api(`/api/group_meta?id=${encodeURIComponent(gid)}`);
-      const ver = Number(r.body?.version||0);
-      if(alive && r.ok && ver && ver !== lastVersion){
-        await onPull();
-      }
-    };
-    const t = setInterval(tick, 4000);
-    return ()=>{ alive = false; clearInterval(t); };
-  }, [gid, lastVersion, gpass]);
+  // Status dot
+  const dotColor = status==="pushing" ? "bg-amber-500"
+                  : status==="pulling" ? "bg-sky-500"
+                  : status==="conflicted" ? "bg-red-500"
+                  : status==="error" ? "bg-red-600"
+                  : "bg-green-500";
 
   return (
     <details className="relative">
       <summary className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border bg-white text-sm whitespace-nowrap select-none">
         <span>👥</span><span className="hidden sm:inline">กลุ่ม</span>
+        {joined && <span className={"inline-block h-2 w-2 rounded-full "+dotColor} title={status}></span>}
       </summary>
 
       <div className="
@@ -450,15 +491,13 @@ function GroupSharePanel({ store, setStore, passphrase }){
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <button className="px-3 py-2 rounded-xl bg-black text-white" onClick={onCreate}>สร้าง</button>
-          <button className="px-3 py-2 rounded-xl bg-white border" onClick={saveJoin}>บันทึก (เข้าร่วม+ดึง)</button>
-          <button className="px-3 py-2 rounded-xl bg-white border" onClick={onPull}>ดึง (MERGE)</button>
-          <button className="px-3 py-2 rounded-xl bg-white border" onClick={onPush}>อัปเดต (แชร์เฉพาะที่เลือก)</button>
+          <button className="px-3 py-2 rounded-xl bg-black text-white" onClick={create}>สร้างและเข้าร่วม</button>
+          <button className="px-3 py-2 rounded-xl bg-white border" onClick={join}>เข้าร่วม</button>
         </div>
 
         <div className="border rounded-xl p-3">
           <div className="flex items-center justify-between mb-2">
-            <div className="font-medium">เลือกผู้ป่วยที่จะแชร์</div>
+            <div className="font-medium">เลือกผู้ป่วยที่จะแชร์ (AutoSync)</div>
             <div className="flex gap-2">
               <button className="px-2 py-1 border rounded bg-white text-xs" onClick={selectAll}>เลือกทั้งหมด</button>
               <button className="px-2 py-1 border rounded bg-white text-xs" onClick={clearAll}>ล้าง</button>
@@ -467,26 +506,26 @@ function GroupSharePanel({ store, setStore, passphrase }){
           <div className="max-h-60 overflow-auto grid grid-cols-1 sm:grid-cols-2 gap-2">
             {store.patients.map(p=> (
               <label key={p.id} className={"flex items-center gap-2 px-3 py-2 rounded-xl border cursor-pointer "+(sel.has(p.id)?"bg-black text-white border-black":"bg-white")}>
-                <input type="checkbox" className="hidden" checked={sel.has(p.id)} onChange={()=>toggle(p.id)} />
+                <input type="checkbox" className="hidden" checked={sel.has(p.id)} onChange={()=>toggleSel(p.id)} />
                 <span className="inline-block h-3 w-3 rounded-full" style={{background:p.color||"#22c55e"}}></span>
                 <span className="truncate">{p.name||"(ไม่มีชื่อ)"} — HN {p.hn||"-"}</span>
               </label>
             ))}
             {store.patients.length===0 && <div className="text-sm text-neutral-500">ยังไม่มีผู้ป่วย</div>}
           </div>
+          {joined && <div className="text-xs text-neutral-500 mt-2">สถานะ: {status} • เวอร์ชันล่าสุด: {lastVersion||0}</div>}
         </div>
 
         <div className="grid sm:grid-cols-2 gap-2">
           <button className="px-3 py-2 rounded-xl bg-white border" onClick={leaveKeep}>ออกกลุ่ม (คงข้อมูล)</button>
           <button className="px-3 py-2 rounded-xl bg-red-600 text-white" onClick={leaveAndPurge}>ออก + ลบข้อมูลจากกลุ่ม</button>
         </div>
-
-        <div className="text-xs text-neutral-500">เวอร์ชันล่าสุดที่รู้จัก: {lastVersion||0}</div>
       </div>
     </details>
   );
 }
 
+// --- App ---
 function MobileTabs({tab,setTab}){
   return (
     <nav className="fixed md:hidden bottom-0 inset-x-0 border-t bg-white z-20" style={{paddingBottom:"env(safe-area-inset-bottom)"}}>
@@ -553,7 +592,7 @@ function App(){
   return (
     <div className="min-h-screen bg-neutral-50 pb-20">
       <header className="sticky top-0 bg-white border-b z-10">
-        <div className="max-w-6xl mx:auto px-3 py-2 flex items-center gap-2">
+        <div className="max-w-6xl mx-auto px-3 py-2 flex items-center gap-2">
           <h1 className="flex items-center gap-2 font-bold text-lg md:text-2xl shrink-0">
             <span>🗒️</span>
             <span className="sm:inline hidden">Progress Notes</span>
@@ -595,13 +634,13 @@ function App(){
                   value={pass}
                   onChange={e => setPass(e.target.value)}
                 />
-                <button className="px-3 py-2 rounded-xl bg-red-600 text:white w-full" onClick={wipe}>
+                <button className="px-3 py-2 rounded-xl bg-red-600 text-white w-full" onClick={wipe}>
                   ล้างข้อมูลทั้งหมด
                 </button>
               </div>
             </details>
 
-            <GroupSharePanel store={state} setStore={setState} passphrase={pass} />
+            <GroupAutoSync store={state} setStore={setState} passphrase={pass} />
           </div>
         </div>
       </header>
@@ -696,7 +735,7 @@ function App(){
 
       <footer className="max-w-6xl mx-auto px-2 sm:px-4 pb-24 md:pb-8 text-xs text-neutral-500">
         <p>⚠️ ข้อมูลเก็บบนอุปกรณ์ของคุณ (localStorage). เปิดเข้ารหัสก่อนใช้ข้อมูลจริง และปฏิบัติตาม PDPA.</p>
-        <p className="mt-1">เวอร์ชัน {APP_VERSION} • MERGE + Polling + 409 conflict • Leave group</p>
+        <p className="mt-1">เวอร์ชัน {APP_VERSION} • AutoSync + Polling + 409 conflict</p>
       </footer>
     </div>
   );

@@ -1,14 +1,15 @@
-# Progress Notes — Netlify (Join+Pull, Meta Polling, 409 Conflict, Leave Group)
-- บันทึก (= join) แล้วดึงทันที
-- Poll meta ทุก 4s (GET /api/group_meta) → ถ้า version เปลี่ยน จะ pull+merge อัตโนมัติ
-- PUT /api/group ใช้ optimistic concurrency: baseVersion mismatch → 409
-- ปุ่ม **ออกกลุ่ม** 2 แบบ: (1) คงข้อมูล, (2) ออก + ลบข้อมูลที่ดึงมาจากกลุ่ม (แท็กด้วย __groupId)
+# Progress Notes — Netlify (AutoSync)
+- เข้ากลุ่มแล้ว **ซิงก์อัตโนมัติ** ทั้งรับ (pull on change) และส่ง (push on local change) — ไม่มีปุ่ม Push/Pull
+- ใช้ polling GET /api/group_meta ทุก 4s เพื่อจับการเปลี่ยนเวอร์ชัน แล้วดึง/รวม (merge) อัตโนมัติ
+- PUT /api/group ใช้ optimistic concurrency (`baseVersion`) → ถ้ามีชนกันจะได้ 409 แล้วดึงก่อนค่อยส่งใหม่
+- เลือกผู้ป่วยที่จะซิงก์ได้, ออกจากกลุ่มได้ 2 แบบ (คงข้อมูล/ลบข้อมูลจากกลุ่ม)
 
-## Quickstart
+## ขั้นตอน
 npm i
 npx netlify login
 npx netlify init
-netlify env:set BLOBS_SITE_ID <Site API ID>   # เฉพาะ dev/preview
+# ถ้า dev/preview ยังไม่ bind Blobs (prod บางเคสไม่ต้อง)
+netlify env:set BLOBS_SITE_ID <Site API ID>
 netlify env:set BLOBS_TOKEN   <Personal Access Token>
 
 npx netlify dev

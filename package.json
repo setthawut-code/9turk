@@ -1,5 +1,5 @@
 {
-  "name": "pn-netlify-merge-share-rt-leave",
+  "name": "pn-netlify-autosync",
   "private": true,
   "type": "module",
   "dependencies": {
