@@ -1,7 +1,7 @@
 
 const { useState, useEffect, useMemo } = React;
-const LS_KEY = "patientNotes.v2";
-const APP_VERSION = "1.7.0-simplegroup-compact";
+const LS_KEY = "patientNotes.v3";
+const APP_VERSION = "1.8.0-group-envfix";
 
 // Utils
 const nowISO = () => new Date().toISOString();
@@ -91,6 +91,24 @@ function AttachmentManager({items,onAdd,onRemove}){
     </div>
   );
 }
+
+// ---- API helper with fallback + non-throwing result {ok,status,body} ----
+async function api(url, init = {}) {
+  const doFetch = (u) =>
+    fetch(u, {
+      ...init,
+      headers: { "Content-Type": "application/json", ...(init.headers || {}) },
+    });
+  let res = await doFetch(url);
+  if ((res.status === 404 || res.status === 502) && url.startsWith("/api/")) {
+    const alt = "/.netlify/functions/" + url.replace(/^\/api\//, "");
+    res = await doFetch(alt);
+  }
+  const text = await res.text();
+  let body; try { body = JSON.parse(text); } catch { body = { _raw: text }; }
+  return { ok: res.ok, status: res.status, body };
+}
+// ----------------------------------------------------------------------
 
 function PatientEditor({ patient, onChange, onRemove }){
   const withDef = (p)=>({
@@ -244,26 +262,18 @@ function NoteRow({ note, patient, onEdit, onDelete }){
   );
 }
 
-async function readJsonSafe(r){
-  const ct=r.headers.get("content-type")||"";
-  if(ct.includes("application/json")) return await r.json();
-  const t=await r.text(); try{return JSON.parse(t)}catch{return {_text:t}};
-}
-
 function GroupSharePanel({ store, setStore, passphrase }){
   const [gid,setGid]=useState(store.settings.group?.id||"");
   const [gpass,setGp]=useState(store.settings.group?.pass||"");
   const save=()=>setStore(s=>({...s,settings:{...s.settings,group:{id:gid,pass:gpass}}}));
-  const api=(url,init={})=>fetch(url,{headers:{"Content-Type":"application/json",...(init.headers||{})},...init});
 
   const onCreate=async()=>{
     if(!/^[A-Za-z0-9_-]{3,40}$/.test(gid)){alert("ชื่อกรุ๊ปไม่ถูกต้อง");return;}
     if(!gpass){alert("ใส่รหัสกรุ๊ป");return;}
     const r=await api("/api/group",{method:"POST",body:jp({id:gid,pass:gpass})});
-    const j=await readJsonSafe(r);
     if(r.status===201){ save(); alert("สร้างกรุ๊ปแล้ว"); }
     else if(r.status===409){ alert("ชื่อกรุ๊ปนี้ถูกใช้แล้ว"); }
-    else { alert("สร้างไม่สำเร็จ: "+(j?.error||r.status)); }
+    else { alert("สร้างไม่สำเร็จ: "+(r.body?.error||r.status)); }
   };
 
   const onPush=async()=>{
@@ -271,13 +281,15 @@ function GroupSharePanel({ store, setStore, passphrase }){
     const payload=(store.settings.encryptionEnabled && passphrase) ? aesEncrypt(jp(store), passphrase)
                   : {type:"pn_export",version:1,data:store,createdAt:nowISO()};
     const r=await api(`/api/group?id=${encodeURIComponent(gid)}`,{method:"PUT",headers:{"x-pass":gpass},body:jp({version:1,payload})});
-    const j=await readJsonSafe(r); if(!r.ok){alert("อัปเดตไม่สำเร็จ: "+(j?.error||r.status));return;} alert("อัปเดตสำเร็จ");
+    if(!r.ok){ alert("อัปเดตไม่สำเร็จ: "+(r.body?.error||r.status)); return; }
+    alert("อัปเดตสำเร็จ");
   };
 
   const onPull=async()=>{
     if(!gid||!gpass){alert("ตั้งชื่อและรหัสก่อน");return;}
     const r=await api(`/api/group?id=${encodeURIComponent(gid)}`,{headers:{"x-pass":gpass}});
-    const j=await readJsonSafe(r); if(!r.ok){alert("ดึงไม่สำเร็จ: "+(j?.error||r.status));return;}
+    if(!r.ok){ alert("ดึงไม่สำเร็จ: "+(r.body?.error||r.status)); return; }
+    const j=r.body;
     const enc=j?.payload;
     if(enc?.enc){
       if(!passphrase){alert("ข้อมูลถูกเข้ารหัส — ตั้งรหัสใน Settings ก่อน");return;}
@@ -315,7 +327,7 @@ function MobileTabs({tab,setTab}){
   return (
     <nav className="fixed md:hidden bottom-0 inset-x-0 border-t bg-white z-20" style={{paddingBottom:"env(safe-area-inset-bottom)"}}>
       <div className="grid grid-cols-3">
-        {[["patient","ผู้ป่วย"],["add","เพิ่มโน้ต"],["notes","ดูโน้ต"]].map(([k,label])=>(
+        {[["patient","ผู้ป่วย"],["notes","ดูโน้ต"],["add","เพิ่มโน้ต"]].map(([k,label])=>(
           <button key={k} onClick={()=>setTab(k)} className={"py-3 text-sm "+(tab===k?"font-semibold":"text-neutral-600")}>{label}</button>
         ))}
       </div>

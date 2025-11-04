@@ -1,6 +1,17 @@
-// netlify/functions/group.js — Functions v2 (custom group name + password)
+// netlify/functions/group.js — Functions v2 (custom group name + password) with env fallbacks
 import { getStore } from "@netlify/blobs";
 import crypto from "node:crypto";
+
+// Allow both production (auto) and dev/preview via explicit env
+const STORE_OPTS = (() => {
+  const siteID = process.env.BLOBS_SITE_ID
+              || process.env.NETLIFY_SITE_ID
+              || process.env.NETLIFY_BLOBS_SITE_ID;
+  const token  = process.env.BLOBS_TOKEN
+              || process.env.NETLIFY_API_TOKEN
+              || process.env.NETLIFY_BLOBS_TOKEN;
+  return (siteID && token) ? { siteID, token } : {};
+})();
 
 const H = {
   "Access-Control-Allow-Origin": "*",
@@ -21,7 +32,7 @@ export default async (req) => {
 
   try {
     const url = new URL(req.url);
-    const store = getStore({ name: "groups" });
+    const store = getStore({ name: "groups", ...STORE_OPTS });
 
     // CREATE: POST /api/group  body: { id, pass }
     if (req.method === "POST") {
