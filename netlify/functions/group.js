@@ -1,4 +1,4 @@
-// netlify/functions/group.js — Functions v2 (custom group name + password) with env fallbacks
+// netlify/functions/group.js — Functions v2 (ESM) with @netlify/blobs + ENV fallbacks
 import { getStore } from "@netlify/blobs";
 import crypto from "node:crypto";
 

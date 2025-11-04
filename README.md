@@ -1,31 +1,38 @@
-# Progress Notes (Local-first) — Group + ENV fix
+# Progress Notes (Local-first) — Netlify (โครงสร้างใหม่)
 
-## Includes
-- `index.html` — CDN React + Tailwind
-- `App.js` — app (patients, CC/U-D, histories, attachments, notes, responsive, group share)
-  - Safer `api(url, init)` with fallback to `/.netlify/functions/*` and structured `{ok,status,body}`
-- `netlify/functions/group.js` — Functions v2 using `@netlify/blobs` with env fallbacks (`STORE_OPTS`)
-- `netlify.toml`, `_redirects`, `package.json`
+## โครงสร้าง
+```
+/public/index.html       # หน้า static (React UMD + Tailwind)
+/public/app.js           # แอป local-first + แนบไฟล์ + AES (ตัวเลือก) + Group Sync
+/public/_redirects       # map /api/* -> /.netlify/functions/*
+/netlify/functions/group.js  # Functions v2 (ESM) ใช้ @netlify/blobs
+/netlify.toml            # publish=public, functions=netlify/functions
+/package.json            # @netlify/blobs + netlify-cli
+```
 
-## Setup (CLI/Git — required for Functions)
+## ตั้งค่า (ครั้งแรก)
 ```bash
 npm i
 npx netlify login
-npx netlify init
-# set env for Blobs (works for dev/preview too)
-netlify env:set BLOBS_SITE_ID <YOUR_SITE_API_ID>
-netlify env:set BLOBS_TOKEN   <YOUR_PERSONAL_ACCESS_TOKEN>
-# run locally
-npx netlify dev
-# deploy
-npx netlify deploy --prod --dir=.
+npx netlify init      # สร้าง/เชื่อมไซต์
+# ตั้ง ENV สำหรับ dev/preview (กัน error "The environment has not been configured to use Netlify Blobs")
+netlify env:set BLOBS_SITE_ID <YOUR_SITE_API_ID>   # ดูได้จาก Site settings → General → API ID
+netlify env:set BLOBS_TOKEN   <YOUR_PERSONAL_ACCESS_TOKEN> # สร้างที่ User settings → Applications → Personal access tokens
 ```
 
-Where to get values:
-- **Site API ID**: Site settings → General → Site details → API ID
-- **Personal Access Token**: User settings → Applications → Personal access tokens (must allow Blobs)
+## รันทดสอบ & Deploy
+```bash
+npx netlify dev
+npx netlify deploy --prod --dir=public
+```
+> ใช้โครงสร้างนี้ `_redirects` อยู่ในโฟลเดอร์ **public** (publish dir) เพื่อให้ `/api/*` proxy ไป Functions ได้
 
-## API quick test
-- `POST /api/group` body `{ "id":"med-ward-a", "pass":"your-secret" }` → expect **201**
-- `GET  /api/group?id=med-ward-a` with header `x-pass: your-secret`
-- `PUT  /api/group?id=med-ward-a` with header `x-pass: your-secret` and body `{ "version":1, "payload":{...} }`
+## API
+- POST `/api/group` body: `{ id, pass }` → 201/409
+- GET  `/api/group?id=<id>` + `x-pass: <pass>` → 200/404
+- PUT  `/api/group?id=<id>` + `x-pass: <pass>` body: `{ version, payload }` → 200
+
+## หมายเหตุ
+- ชื่อกรุ๊ปอนุญาต `A–Z a–z 0–9 _ -` ยาว 3–40 ตัว (แก้ regex ใน `group.js` ได้ถ้าต้องการใช้ภาษาไทย)
+- ถ้ารัน `netlify dev` หรือ deploy preview แล้วเจอ error Blobs ให้ตรวจ ENV ตามด้านบน
+- ฝั่งแอปมี fallback เมื่อ `/api` 404/502 จะลอง `/.netlify/functions/*` ให้อัตโนมัติ

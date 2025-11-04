@@ -1,7 +1,7 @@
 
 const { useState, useEffect, useMemo } = React;
-const LS_KEY = "patientNotes.v3";
-const APP_VERSION = "1.8.0-group-envfix";
+const LS_KEY = "patientNotes.v4";
+const APP_VERSION = "2.1.0-netlify-structured";
 
 // Utils
 const nowISO = () => new Date().toISOString();
