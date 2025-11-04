@@ -1,4 +1,4 @@
-// netlify/functions/group.js — fixed for @netlify/blobs v8: use get(...,{type:'json'})
+// netlify/functions/group.js — unchanged API (stores whatever payload you send)
 import { getStore } from "@netlify/blobs";
 import crypto from "node:crypto";
 

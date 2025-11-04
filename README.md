@@ -1,12 +1,14 @@
-# Progress Notes (Local-first) — Netlify (FIX)
-- Push ส่ง payload เป็น raw state (ไม่ห่อ) หรือ ciphertext ถ้าเปิด AES
-- Pull รองรับ payload เก่า/ใหม่
-- ฟังก์ชันใช้ @netlify/blobs v8: get(key,{type:'json'}) + setJSON()
+# Progress Notes (Local-first) — Netlify (MERGE + Share Selected Patients)
+- Pull = MERGE (ไม่ overwrite) โดยดู updatedAt/timestamp
+- Push = เลือกผู้ป่วยที่จะส่งขึ้นกลุ่ม (subset payload)
+- รองรับ AES encrypt ก่อนส่ง
+- API ไม่เปลี่ยน (เก็บ payload ตามที่ส่ง)
 
-## โครงสร้าง
-/public/index.html
-/public/app.js
-/public/_redirects
-/netlify/functions/group.js
-/netlify.toml
-/package.json
+## Quickstart
+npm i
+npx netlify login
+npx netlify init
+netlify env:set BLOBS_SITE_ID <Site API ID>   # เฉพาะ dev/preview
+netlify env:set BLOBS_TOKEN   <Personal Access Token>
+npx netlify dev
+npx netlify deploy --prod --dir=public

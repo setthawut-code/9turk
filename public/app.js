@@ -1,7 +1,7 @@
 
 const { useState, useEffect, useMemo } = React;
-const LS_KEY = "patientNotes.v4";
-const APP_VERSION = "2.1.1-netlify-structured-fix";
+const LS_KEY = "patientNotes.v5";
+const APP_VERSION = "2.2.0-merge-share";
 
 // Utils
 const nowISO = () => new Date().toISOString();
@@ -32,6 +32,39 @@ const defaults = () => ({
   patients: [], notes: [],
   settings: { encryptionEnabled:false, group:{ id:"", pass:"" } }
 });
+
+// Merge helper — no overwrite; resolve by updatedAt/timestamp
+function mergeState(local, incoming){
+  const out = JSON.parse(JSON.stringify(local||defaults()));
+
+  const pMap = new Map(out.patients.map(p=>[p.id,p]));
+  let newPatients=0, updatedPatients=0;
+  for(const p of (incoming.patients||[])){
+    const ex = pMap.get(p.id);
+    if(!ex){ pMap.set(p.id,p); newPatients++; }
+    else{
+      const lu = Date.parse(ex.updatedAt||ex.createdAt||0) || 0;
+      const ru = Date.parse(p.updatedAt||p.createdAt||0) || 0;
+      if(ru>lu){ pMap.set(p.id,{...ex,...p}); updatedPatients++; }
+    }
+  }
+  out.patients = Array.from(pMap.values());
+
+  const nMap = new Map(out.notes.map(n=>[n.id,n]));
+  let newNotes=0, updatedNotes=0;
+  for(const n of (incoming.notes||[])){
+    const ex = nMap.get(n.id);
+    if(!ex){ nMap.set(n.id,n); newNotes++; }
+    else{
+      const lt = Date.parse(ex.timestamp||0) || 0;
+      const rt = Date.parse(n.timestamp||0) || 0;
+      if(rt>lt){ nMap.set(n.id,{...ex,...n}); updatedNotes++; }
+    }
+  }
+  out.notes = Array.from(nMap.values());
+  return { merged: out, stats: { newPatients, updatedPatients, newNotes, updatedNotes } };
+}
+
 const Storage = {
   load(pass){
     const raw = localStorage.getItem(LS_KEY); if(!raw) return defaults();
@@ -120,8 +153,8 @@ function PatientEditor({ patient, onChange, onRemove }){
   useEffect(()=>setM(withDef(patient)),[patient]);
   useEffect(()=>{const t=setTimeout(()=>onChange(m),200); return ()=>clearTimeout(t);},[m]);
 
-  const set=(patch)=>setM(v=>({...v,...patch}));
-  const setHx=(k,val)=>setM(v=>({...v,hx:{...v.hx,[k]:val}}));
+  const set=(patch)=>setM(v=>({...v,...patch, updatedAt: nowISO()}));
+  const setHx=(k,val)=>setM(v=>({...v,updatedAt: nowISO(),hx:{...v.hx,[k]:val}}));
 
   return (
     <div>
@@ -204,7 +237,7 @@ function NewNoteForm({ onAdd }){
           onRemove={(id)=>setM(v=>({...v,attachments:(v.attachments||[]).filter(x=>x.id!==id)}))}/>
       </div>
       <div className="mt-3">
-        <button className="px-3 py-2 rounded-xl bg-black text-white" onClick={()=>onAdd({...m, timestamp: nowISO()})}>บันทึก</button>
+        <button className="px-3 py-2 rounded-xl bg-black text-white" onClick={()=>onAdd({...m, timestamp: nowISO(), updatedAt: nowISO()})}>บันทึก</button>
       </div>
     </div>
   );
@@ -265,6 +298,17 @@ function NoteRow({ note, patient, onEdit, onDelete }){
 function GroupSharePanel({ store, setStore, passphrase }){
   const [gid,setGid]=useState(store.settings.group?.id||"");
   const [gpass,setGp]=useState(store.settings.group?.pass||"");
+  const [sel, setSel] = useState(new Set()); // selected patientIds for share
+
+  useEffect(()=>{
+    // initialize selection to all patients on first open
+    setSel(new Set(store.patients.map(p=>p.id)));
+  }, [store.patients.length]);
+
+  const toggle = (id)=> setSel(prev => { const s=new Set(prev); s.has(id)?s.delete(id):s.add(id); return s; });
+  const selectAll = ()=> setSel(new Set(store.patients.map(p=>p.id)));
+  const clearAll = ()=> setSel(new Set());
+
   const save=()=>setStore(s=>({...s,settings:{...s.settings,group:{id:gid,pass:gpass}}}));
 
   const onCreate=async()=>{
@@ -276,18 +320,27 @@ function GroupSharePanel({ store, setStore, passphrase }){
     else { alert("สร้างไม่สำเร็จ: "+(r.body?.error||r.status)); }
   };
 
+  const buildSubset = ()=>{
+    const ids = Array.from(sel);
+    const patients = store.patients.filter(p=>ids.includes(p.id));
+    const notes = store.notes.filter(n=>ids.includes(n.patientId));
+    return { mode:"merge", version:1, updatedAt: nowISO(), patients, notes };
+  }
+
   const onPush=async()=>{
     if(!gid||!gpass){alert("ตั้งชื่อและรหัสก่อน");return;}
+    if(sel.size===0){ alert("เลือกผู้ป่วยที่จะแชร์ก่อน"); return; }
+    const subset = buildSubset();
     const payload=(store.settings.encryptionEnabled && passphrase)
-      ? aesEncrypt(jp(store), passphrase)
-      : store; // send raw state
+      ? aesEncrypt(jp(subset), passphrase)
+      : subset;
     const r=await api(`/api/group?id=${encodeURIComponent(gid)}`,{
       method:"PUT",
       headers:{"x-pass":gpass},
       body:jp({version:1,payload}),
     });
     if(!r.ok){ alert("อัปเดตไม่สำเร็จ: "+(r.body?.error||r.status)); return; }
-    alert("อัปเดตสำเร็จ");
+    alert("อัปเดต (แชร์เฉพาะผู้ป่วยที่เลือก) สำเร็จ");
   };
 
   const onPull=async()=>{
@@ -296,36 +349,70 @@ function GroupSharePanel({ store, setStore, passphrase }){
     if(!r.ok){ alert("ดึงไม่สำเร็จ: "+(r.body?.error||r.status)); return; }
     const pl = r.body?.payload;
 
+    // เข้ารหัส
     if(pl?.enc){
       if(!passphrase){alert("ข้อมูลถูกเข้ารหัส — ตั้งรหัสใน Settings ก่อน");return;}
       const s=aesDecrypt(pl, passphrase); if(!s){alert("ถอดรหัสไม่สำเร็จ");return;}
-      const data=parse(s); if(!data?.patients||!data?.notes){alert("payload ไม่ถูกต้อง");return;}
-      setStore(data); alert("ดึง + ถอดรหัสสำเร็จ"); return;
+      const incoming=parse(s); if(!incoming){alert("payload ไม่ถูกต้อง");return;}
+      const { merged, stats } = mergeState(store, incoming.data? incoming.data : incoming);
+      setStore(merged);
+      alert(`ดึงและ MERGE แล้ว: +${stats.newPatients} คนไข้, อัปเดต ${stats.updatedPatients}; โน้ต +${stats.newNotes}, อัปเดต ${stats.updatedNotes}`);
+      return;
     }
 
-    const data = (pl?.patients && pl?.notes) ? pl
-                : (pl?.data && pl.data.patients && pl.data.notes) ? pl.data
-                : null;
-    if(!data){ alert("payload ไม่ถูกต้อง ต้อง ดึง กลุ่ม อีกครั้ง"); return; }
-    if(!confirm("ข้อมูลจะเขียนทับในเครื่อง ดำเนินการต่อ?")) return;
-    setStore(data); alert("ดึงสำเร็จ");
+    // ไม่เข้ารหัส — รองรับทั้ง subset ใหม่ และ raw state/เก่า
+    let incoming = null;
+    if(pl?.mode==="merge" && (pl.patients||pl.notes)){
+      incoming = { patients: pl.patients||[], notes: pl.notes||[] };
+    }else if(pl?.patients && pl?.notes){
+      incoming = { patients: pl.patients, notes: pl.notes };
+    }else if(pl?.data && pl.data.patients && pl.data.notes){
+      incoming = { patients: pl.data.patients, notes: pl.data.notes };
+    }
+
+    if(!incoming){ alert("payload ไม่ถูกต้อง"); return; }
+
+    const { merged, stats } = mergeState(store, incoming);
+    setStore(merged);
+    alert(`MERGE แล้ว: +${stats.newPatients} คนไข้, อัปเดต ${stats.updatedPatients}; โน้ต +${stats.newNotes}, อัปเดต ${stats.updatedNotes}`);
   };
 
   return (
     <details className="ml-2">
       <summary className="px-3 py-2 rounded-xl bg-white border cursor-pointer">👥 กลุ่ม</summary>
-      <div className="absolute right-4 mt-2 w-[min(96vw,26rem)] p-4 bg-white rounded-2xl shadow-xl border space-y-2">
+      <div className="absolute right-4 mt-2 w-[min(96vw,28rem)] p-4 bg-white rounded-2xl shadow-xl border space-y-3">
         <div className="grid gap-2">
           <div><label className="text-xs text-neutral-500">ชื่อกรุ๊ป (a-z 0-9 _ -)</label><Input value={gid} onChange={e=>setGid(e.target.value)}/></div>
           <div><label className="text-xs text-neutral-500">รหัสกรุ๊ป</label><Input type="password" value={gpass} onChange={e=>setGp(e.target.value)}/></div>
         </div>
+
+        <div className="border rounded-xl p-3">
+          <div className="flex items-center justify-between mb-2">
+            <div className="font-medium">เลือกผู้ป่วยที่จะแชร์</div>
+            <div className="flex gap-2">
+              <button className="px-2 py-1 border rounded bg-white text-xs" onClick={selectAll}>เลือกทั้งหมด</button>
+              <button className="px-2 py-1 border rounded bg-white text-xs" onClick={clearAll}>ล้าง</button>
+            </div>
+          </div>
+          <div className="max-h-60 overflow-auto grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {store.patients.map(p=> (
+              <label key={p.id} className={"flex items-center gap-2 px-3 py-2 rounded-xl border cursor-pointer "+(sel.has(p.id)?"bg-black text-white border-black":"bg-white")}>
+                <input type="checkbox" className="hidden" checked={sel.has(p.id)} onChange={()=>toggle(p.id)} />
+                <span className="inline-block h-3 w-3 rounded-full" style={{background:p.color||"#22c55e"}}></span>
+                <span className="truncate">{p.name||"(ไม่มีชื่อ)"} — HN {p.hn||"-"}</span>
+              </label>
+            ))}
+            {store.patients.length===0 && <div className="text-sm text-neutral-500">ยังไม่มีผู้ป่วย</div>}
+          </div>
+        </div>
+
         <div className="flex flex-wrap gap-2">
           <button className="px-3 py-2 rounded-xl bg-black text-white" onClick={onCreate}>สร้าง</button>
-          <button className="px-3 py-2 rounded-xl bg-white border" onClick={()=>save()}>บันทึก</button>
-          <button className="px-3 py-2 rounded-xl bg-white border" onClick={onPull}>ดึง</button>
-          <button className="px-3 py-2 rounded-xl bg-white border" onClick={onPush}>อัปเดต</button>
+          <button className="px-3 py-2 rounded-xl bg-white border" onClick={()=>setStore(s=>({...s,settings:{...s.settings,group:{id:gid,pass:gpass}}}))}>บันทึก</button>
+          <button className="px-3 py-2 rounded-xl bg-white border" onClick={onPull}>ดึง (MERGE)</button>
+          <button className="px-3 py-2 rounded-xl bg-white border" onClick={onPush}>อัปเดต (แชร์เฉพาะที่เลือก)</button>
         </div>
-        <div className="text-xs text-neutral-500">* แนะนำเปิดเข้ารหัส (AES) ใน Settings ก่อน Push</div>
+        <div className="text-xs text-neutral-500">* เปิด AES ใน Settings เพื่อเข้ารหัส payload ก่อน Push ได้</div>
       </div>
     </details>
   );
@@ -364,11 +451,15 @@ function App(){
   const notesForSel = useMemo(()=> state.notes.filter(n=>n.patientId===sel).sort((a,b)=>b.timestamp.localeCompare(a.timestamp)), [state.notes, sel]);
 
   // CRUD
-  const addPatient=()=>{ const id=uid(); const p={id,name:"ผู้ป่วยใหม่",hn:"",sex:"",dob:"",color:"#22c55e",tags:[],cc:"",ud:"",hx:{},attachments:[]}; setState(s=>({...s,patients:[p,...s.patients]})); setSel(id); };
-  const updatePatient=(id,patch)=> setState(s=>({...s,patients:s.patients.map(p=>p.id===id?{...p,...patch}:p)}));
+  const addPatient=()=>{
+    const id=uid();
+    const p={id,name:"ผู้ป่วยใหม่",hn:"",sex:"",dob:"",color:"#22c55e",tags:[],cc:"",ud:"",hx:{},attachments:[],createdAt: nowISO(), updatedAt: nowISO()};
+    setState(s=>({...s,patients:[p,...s.patients]})); setSel(id);
+  };
+  const updatePatient=(id,patch)=> setState(s=>({...s,patients:s.patients.map(p=>p.id===id?{...p,...patch,updatedAt: nowISO()}:p)}));
   const removePatient=(id)=>{ if(!confirm("ลบผู้ป่วยและโน้ตทั้งหมด?")) return; setState(s=>({...s,patients:s.patients.filter(p=>p.id!==id),notes:s.notes.filter(n=>n.patientId!==id)})); setSel(""); };
-  const addNote=(pid,payload)=> setState(s=>({...s,notes:[{id:uid(),patientId:pid,...payload},...s.notes]}));
-  const updateNote=(id,patch)=> setState(s=>({...s,notes:s.notes.map(n=>n.id===id?{...n,...patch}:n)}));
+  const addNote=(pid,payload)=> setState(s=>({...s,notes:[{id:uid(),patientId:pid,createdAt: nowISO(), ...payload},...s.notes]}));
+  const updateNote=(id,patch)=> setState(s=>({...s,notes:s.notes.map(n=>n.id===id?{...n,...patch,updatedAt: nowISO()}:n)}));
   const removeNote=(id)=>{ if(!confirm("ลบโน้ตนี้?")) return; setState(s=>({...s,notes:s.notes.filter(n=>n.id!==id)})); };
 
   const wipe=()=>{ if(!confirm("ล้างข้อมูลทั้งหมดในเครื่อง?")) return; Storage.clear(); setState(defaults()); setSel(""); setPass(""); setLocked(false); setBad(false); };
@@ -508,7 +599,7 @@ function App(){
 
       <footer className="max-w-6xl mx-auto px-2 sm:px-4 pb-24 md:pb-8 text-xs text-neutral-500">
         <p>⚠️ ข้อมูลเก็บบนอุปกรณ์ของคุณ (localStorage). เปิดเข้ารหัสก่อนใช้ข้อมูลจริง และปฏิบัติตาม PDPA.</p>
-        <p className="mt-1">เวอร์ชัน {APP_VERSION} • ไม่มีเซิร์ฟเวอร์ (ยกเว้น Group API)</p>
+        <p className="mt-1">เวอร์ชัน {APP_VERSION} • MERGE ไม่ทับไฟล์ • แชร์เลือกผู้ป่วยได้</p>
       </footer>
     </div>
   );
