@@ -1,4 +1,4 @@
-// netlify/functions/group.js — unchanged API (stores whatever payload you send)
+// netlify/functions/group.js — blobs v8 JSON helpers
 import { getStore } from "@netlify/blobs";
 import crypto from "node:crypto";
 

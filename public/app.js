@@ -1,7 +1,7 @@
 
 const { useState, useEffect, useMemo } = React;
 const LS_KEY = "patientNotes.v5";
-const APP_VERSION = "2.2.0-merge-share";
+const APP_VERSION = "2.3.0-full-mobile-merge-share";
 
 // Utils
 const nowISO = () => new Date().toISOString();
@@ -298,10 +298,9 @@ function NoteRow({ note, patient, onEdit, onDelete }){
 function GroupSharePanel({ store, setStore, passphrase }){
   const [gid,setGid]=useState(store.settings.group?.id||"");
   const [gpass,setGp]=useState(store.settings.group?.pass||"");
-  const [sel, setSel] = useState(new Set()); // selected patientIds for share
+  const [sel, setSel] = useState(new Set());
 
   useEffect(()=>{
-    // initialize selection to all patients on first open
     setSel(new Set(store.patients.map(p=>p.id)));
   }, [store.patients.length]);
 
@@ -309,13 +308,11 @@ function GroupSharePanel({ store, setStore, passphrase }){
   const selectAll = ()=> setSel(new Set(store.patients.map(p=>p.id)));
   const clearAll = ()=> setSel(new Set());
 
-  const save=()=>setStore(s=>({...s,settings:{...s.settings,group:{id:gid,pass:gpass}}}));
-
   const onCreate=async()=>{
     if(!/^[A-Za-z0-9_-]{3,40}$/.test(gid)){alert("ชื่อกรุ๊ปไม่ถูกต้อง");return;}
     if(!gpass){alert("ใส่รหัสกรุ๊ป");return;}
     const r=await api("/api/group",{method:"POST",body:jp({id:gid,pass:gpass})});
-    if(r.status===201){ save(); alert("สร้างกรุ๊ปแล้ว"); }
+    if(r.status===201){ setStore(s=>({...s,settings:{...s.settings,group:{id:gid,pass:gpass}}})); alert("สร้างกรุ๊ปแล้ว"); }
     else if(r.status===409){ alert("ชื่อกรุ๊ปนี้ถูกใช้แล้ว"); }
     else { alert("สร้างไม่สำเร็จ: "+(r.body?.error||r.status)); }
   };
@@ -349,7 +346,6 @@ function GroupSharePanel({ store, setStore, passphrase }){
     if(!r.ok){ alert("ดึงไม่สำเร็จ: "+(r.body?.error||r.status)); return; }
     const pl = r.body?.payload;
 
-    // เข้ารหัส
     if(pl?.enc){
       if(!passphrase){alert("ข้อมูลถูกเข้ารหัส — ตั้งรหัสใน Settings ก่อน");return;}
       const s=aesDecrypt(pl, passphrase); if(!s){alert("ถอดรหัสไม่สำเร็จ");return;}
@@ -360,7 +356,6 @@ function GroupSharePanel({ store, setStore, passphrase }){
       return;
     }
 
-    // ไม่เข้ารหัส — รองรับทั้ง subset ใหม่ และ raw state/เก่า
     let incoming = null;
     if(pl?.mode==="merge" && (pl.patients||pl.notes)){
       incoming = { patients: pl.patients||[], notes: pl.notes||[] };
@@ -369,7 +364,6 @@ function GroupSharePanel({ store, setStore, passphrase }){
     }else if(pl?.data && pl.data.patients && pl.data.notes){
       incoming = { patients: pl.data.patients, notes: pl.data.notes };
     }
-
     if(!incoming){ alert("payload ไม่ถูกต้อง"); return; }
 
     const { merged, stats } = mergeState(store, incoming);
@@ -378,9 +372,16 @@ function GroupSharePanel({ store, setStore, passphrase }){
   };
 
   return (
-    <details className="ml-2">
-      <summary className="px-3 py-2 rounded-xl bg-white border cursor-pointer">👥 กลุ่ม</summary>
-      <div className="absolute right-4 mt-2 w-[min(96vw,28rem)] p-4 bg-white rounded-2xl shadow-xl border space-y-3">
+    <details className="relative">
+      <summary className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border bg-white text-sm whitespace-nowrap select-none">
+        <span>👥</span><span className="hidden sm:inline">กลุ่ม</span>
+      </summary>
+
+      <div className="
+        md:absolute md:right-0 md:mt-2
+        fixed left-1/2 -translate-x-1/2 top-14
+        w-[min(96vw,28rem)] z-50 p-4
+        bg-white rounded-2xl shadow-xl border space-y-3">
         <div className="grid gap-2">
           <div><label className="text-xs text-neutral-500">ชื่อกรุ๊ป (a-z 0-9 _ -)</label><Input value={gid} onChange={e=>setGid(e.target.value)}/></div>
           <div><label className="text-xs text-neutral-500">รหัสกรุ๊ป</label><Input type="password" value={gpass} onChange={e=>setGp(e.target.value)}/></div>
@@ -485,21 +486,54 @@ function App(){
   return (
     <div className="min-h-screen bg-neutral-50 pb-20">
       <header className="sticky top-0 bg-white border-b z-10">
-        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-2">
-          <h1 className="text-lg md:text-2xl font-bold">🗒️ Progress Notes</h1>
+        <div className="max-w-6xl mx-auto px-3 py-2 flex items-center gap-2">
+          <h1 className="flex items-center gap-2 font-bold text-lg md:text-2xl shrink-0">
+            <span>🗒️</span>
+            <span className="sm:inline hidden">Progress Notes</span>
+            <span className="sm:hidden inline">Notes</span>
+          </h1>
+
           <div className="ml-auto flex items-center gap-2">
-            {tab==="patient" && <button className="px-3 py-2 rounded-xl bg-black text-white" onClick={addPatient}>+ ผู้ป่วย</button>}
-            <details className="ml-2">
-              <summary className="px-3 py-2 rounded-xl bg-white border cursor-pointer">⚙️ ตั้งค่า</summary>
-              <div className="absolute right-4 mt-2 w-[min(96vw,22rem)] p-4 bg-white rounded-2xl shadow-xl border space-y-2">
+            {tab==="patient" && (
+              <button
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-black text-white text-sm whitespace-nowrap"
+                onClick={addPatient}
+              >
+                <span className="sm:hidden">＋</span>
+                <span className="hidden sm:inline">+ ผู้ป่วย</span>
+                <span className="sm:hidden">ผู้ป่วย</span>
+              </button>
+            )}
+
+            <details className="relative">
+              <summary className="inline-flex items-center gap-2 px-3 py-2 rounded-xl border bg-white text-sm whitespace-nowrap select-none">
+                <span>⚙️</span><span className="hidden sm:inline">ตั้งค่า</span>
+              </summary>
+              <div className="
+                md:absolute md:right-0 md:mt-2
+                fixed left-1/2 -translate-x-1/2 top-14
+                w-[min(96vw,22rem)] z-50 p-4
+                bg-white rounded-2xl shadow-xl border space-y-2">
                 <label className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={state.settings.encryptionEnabled} onChange={e=>setState(s=>({...s,settings:{...s.settings,encryptionEnabled:e.target.checked}}))}/>
+                  <input
+                    type="checkbox"
+                    checked={state.settings.encryptionEnabled}
+                    onChange={e => setState(s => ({...s, settings: {...s.settings, encryptionEnabled: e.target.checked}}))}
+                  />
                   เข้ารหัสข้อมูลในเครื่อง (AES)
                 </label>
-                <Input type="password" placeholder={pass? "เปลี่ยนรหัสผ่าน":"ตั้งรหัสผ่าน"} value={pass} onChange={e=>setPass(e.target.value)}/>
-                <button className="px-3 py-2 rounded-xl bg-red-600 text-white w-full" onClick={wipe}>ล้างข้อมูลทั้งหมด</button>
+                <Input
+                  type="password"
+                  placeholder={pass ? "เปลี่ยนรหัสผ่าน" : "ตั้งรหัสผ่าน"}
+                  value={pass}
+                  onChange={e => setPass(e.target.value)}
+                />
+                <button className="px-3 py-2 rounded-xl bg-red-600 text-white w-full" onClick={wipe}>
+                  ล้างข้อมูลทั้งหมด
+                </button>
               </div>
             </details>
+
             <GroupSharePanel store={state} setStore={setState} passphrase={pass} />
           </div>
         </div>
@@ -514,7 +548,6 @@ function App(){
       </div>
 
       <main className="max-w-6xl mx-auto grid md:grid-cols-12 gap-4 px-2 sm:px-4 pb-8">
-        {/* Sidebar: patient list */}
         <aside className={(tab==="patient"?"block":"hidden")+" md:col-span-4 lg:col-span-3"}>
           <div className="rounded-2xl bg-white shadow p-3">
             <Input value={q} onChange={e=>setQ(e.target.value)} placeholder="ค้นหา: ชื่อ / HN / CC / U/D"/>
@@ -538,7 +571,6 @@ function App(){
           </div>
         </aside>
 
-        {/* Patient editor */}
         <section className={(tab==="patient"?"block":"hidden")+" md:col-span-8 lg:col-span-9"}>
           <div className="rounded-2xl bg-white shadow p-4">
             {selPatient ? <PatientEditor patient={selPatient} onChange={(patch)=>updatePatient(selPatient.id, patch)} onRemove={()=>removePatient(selPatient.id)} /> :
@@ -557,7 +589,6 @@ function App(){
           )}
         </section>
 
-        {/* Notes viewer */}
         <section className={(tab==="notes"?"block":"hidden")+" md:col-span-12"}>
           <div className="rounded-2xl bg-white shadow p-4">
             <div className="text-sm text-neutral-600 mb-2">ดู Progress notes ทั้งหมด (ค้นหา/ลบ/แก้เวลาได้)</div>
@@ -577,7 +608,6 @@ function App(){
           </div>
         </section>
 
-        {/* Add note */}
         <section className={(tab==="add"?"block":"hidden")+" md:col-span-12"}>
           <div className="rounded-2xl bg-white shadow p-4">
             {state.patients.length===0 ? <div className="text-sm text-neutral-600">ยังไม่มีผู้ป่วย — ไปแท็บ “ผู้ป่วย” เพื่อเพิ่มก่อน</div> :
@@ -599,7 +629,7 @@ function App(){
 
       <footer className="max-w-6xl mx-auto px-2 sm:px-4 pb-24 md:pb-8 text-xs text-neutral-500">
         <p>⚠️ ข้อมูลเก็บบนอุปกรณ์ของคุณ (localStorage). เปิดเข้ารหัสก่อนใช้ข้อมูลจริง และปฏิบัติตาม PDPA.</p>
-        <p className="mt-1">เวอร์ชัน {APP_VERSION} • MERGE ไม่ทับไฟล์ • แชร์เลือกผู้ป่วยได้</p>
+        <p className="mt-1">เวอร์ชัน {APP_VERSION} • MERGE ไม่ทับไฟล์ • แชร์เลือกผู้ป่วยได้ • ส่วนหัวสวยบนมือถือ</p>
       </footer>
     </div>
   );
