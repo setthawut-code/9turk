@@ -1,16 +1,19 @@
-// netlify/functions/group.js — Functions v2 (ESM) with @netlify/blobs + ENV fallbacks
+// netlify/functions/group.js — fixed: ใช้ get(...,{type:'json'}) แทน getJSON()
 import { getStore } from "@netlify/blobs";
 import crypto from "node:crypto";
 
-// Allow both production (auto) and dev/preview via explicit env
+// ใช้ ENV เฉพาะตอน dev/preview; บนโปรดักชัน Netlify จะใส่ให้อัตโนมัติ
+const STORE_NAME = "groups";
 const STORE_OPTS = (() => {
-  const siteID = process.env.BLOBS_SITE_ID
-              || process.env.NETLIFY_SITE_ID
-              || process.env.NETLIFY_BLOBS_SITE_ID;
-  const token  = process.env.BLOBS_TOKEN
-              || process.env.NETLIFY_API_TOKEN
-              || process.env.NETLIFY_BLOBS_TOKEN;
-  return (siteID && token) ? { siteID, token } : {};
+  const siteID =
+    process.env.BLOBS_SITE_ID ||
+    process.env.NETLIFY_SITE_ID ||
+    process.env.NETLIFY_BLOBS_SITE_ID;
+  const token =
+    process.env.BLOBS_TOKEN ||
+    process.env.NETLIFY_API_TOKEN ||
+    process.env.NETLIFY_BLOBS_TOKEN;
+  return siteID && token ? { siteID, token } : {};
 })();
 
 const H = {
@@ -23,7 +26,8 @@ const H = {
 const sha = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
 const validId = (s) => /^[A-Za-z0-9_-]{3,40}$/.test(s || "");
 function safeEq(a, b) {
-  const x = Buffer.from(String(a)), y = Buffer.from(String(b));
+  const x = Buffer.from(String(a)),
+    y = Buffer.from(String(b));
   return x.length === y.length && crypto.timingSafeEqual(x, y);
 }
 
@@ -32,9 +36,9 @@ export default async (req) => {
 
   try {
     const url = new URL(req.url);
-    const store = getStore({ name: "groups", ...STORE_OPTS });
+    const store = getStore(STORE_NAME, STORE_OPTS);
 
-    // CREATE: POST /api/group  body: { id, pass }
+    // POST /api/group  { id, pass }  → create
     if (req.method === "POST") {
       let body = {};
       try { body = await req.json(); } catch {}
@@ -44,7 +48,7 @@ export default async (req) => {
       if (!pass)       return Response.json({ error: "Missing pass" }, { status: 400, headers: H });
 
       const metaKey = `meta:${id}`;
-      const exists = await store.getJSON(metaKey);
+      const exists = await store.get(metaKey, { type: "json" });   // ← แทน getJSON
       if (exists) return Response.json({ error: "GroupExists" }, { status: 409, headers: H });
 
       await store.setJSON(metaKey, { passHash: sha(pass), createdAt: Date.now() });
@@ -52,22 +56,21 @@ export default async (req) => {
       return Response.json({ id }, { status: 201, headers: H });
     }
 
-    // id from query
+    // ส่วนที่เหลือต้องมี ?id= และ header x-pass
     const id = url.searchParams.get("id");
     if (!validId(id)) return Response.json({ error: "Bad id" }, { status: 400, headers: H });
 
-    // must provide password on GET/PUT
     const pass = req.headers.get("x-pass") || "";
     if (!pass) return Response.json({ error: "Missing pass" }, { status: 400, headers: H });
 
-    const meta = await store.getJSON(`meta:${id}`);
+    const meta = await store.get(`meta:${id}`, { type: "json" });  // ← แทน getJSON
     if (!meta) return Response.json({ error: "Not found" }, { status: 404, headers: H });
     if (!safeEq(sha(pass), meta.passHash)) {
       return Response.json({ error: "Forbidden" }, { status: 403, headers: H });
     }
 
     if (req.method === "GET") {
-      const data = await store.getJSON(`data:${id}`);
+      const data = await store.get(`data:${id}`, { type: "json" }); // ← แทน getJSON
       if (!data) return Response.json({ error: "Not found" }, { status: 404, headers: H });
       return Response.json(data, { headers: H });
     }
@@ -89,6 +92,9 @@ export default async (req) => {
     return Response.json({ error: "Method not allowed" }, { status: 405, headers: H });
   } catch (e) {
     console.error("group.js error", e);
-    return Response.json({ error: "Internal error", detail: String(e?.message || e) }, { status: 500, headers: H });
+    return Response.json(
+      { error: "Internal error", detail: String(e?.message || e) },
+      { status: 500, headers: H }
+    );
   }
 };
