@@ -1,7 +1,7 @@
 
 const { useState, useEffect, useMemo } = React;
 const LS_KEY = "patientNotes.v5";
-const APP_VERSION = "2.3.0-full-mobile-merge-share";
+const APP_VERSION = "2.5.0-rt-poll-409-leave";
 
 // Utils
 const nowISO = () => new Date().toISOString();
@@ -38,31 +38,29 @@ function mergeState(local, incoming){
   const out = JSON.parse(JSON.stringify(local||defaults()));
 
   const pMap = new Map(out.patients.map(p=>[p.id,p]));
-  let newPatients=0, updatedPatients=0;
   for(const p of (incoming.patients||[])){
     const ex = pMap.get(p.id);
-    if(!ex){ pMap.set(p.id,p); newPatients++; }
+    if(!ex){ pMap.set(p.id,p); }
     else{
       const lu = Date.parse(ex.updatedAt||ex.createdAt||0) || 0;
       const ru = Date.parse(p.updatedAt||p.createdAt||0) || 0;
-      if(ru>lu){ pMap.set(p.id,{...ex,...p}); updatedPatients++; }
+      if(ru>lu){ pMap.set(p.id,{...ex,...p}); }
     }
   }
   out.patients = Array.from(pMap.values());
 
   const nMap = new Map(out.notes.map(n=>[n.id,n]));
-  let newNotes=0, updatedNotes=0;
   for(const n of (incoming.notes||[])){
     const ex = nMap.get(n.id);
-    if(!ex){ nMap.set(n.id,n); newNotes++; }
+    if(!ex){ nMap.set(n.id,n); }
     else{
       const lt = Date.parse(ex.timestamp||0) || 0;
       const rt = Date.parse(n.timestamp||0) || 0;
-      if(rt>lt){ nMap.set(n.id,{...ex,...n}); updatedNotes++; }
+      if(rt>lt){ nMap.set(n.id,{...ex,...n}); }
     }
   }
   out.notes = Array.from(nMap.values());
-  return { merged: out, stats: { newPatients, updatedPatients, newNotes, updatedNotes } };
+  return { merged: out };
 }
 
 const Storage = {
@@ -298,29 +296,44 @@ function NoteRow({ note, patient, onEdit, onDelete }){
 function GroupSharePanel({ store, setStore, passphrase }){
   const [gid,setGid]=useState(store.settings.group?.id||"");
   const [gpass,setGp]=useState(store.settings.group?.pass||"");
-  const [sel, setSel] = useState(new Set());
+  const [sel, setSel] = useState(new Set()); // selected patients to share
+  const [lastVersion, setLastVersion] = useState(0);
 
-  useEffect(()=>{
-    setSel(new Set(store.patients.map(p=>p.id)));
-  }, [store.patients.length]);
+  useEffect(()=>{ setSel(new Set(store.patients.map(p=>p.id))); }, [store.patients.length]);
 
   const toggle = (id)=> setSel(prev => { const s=new Set(prev); s.has(id)?s.delete(id):s.add(id); return s; });
   const selectAll = ()=> setSel(new Set(store.patients.map(p=>p.id)));
   const clearAll = ()=> setSel(new Set());
 
+  const fetchMeta = async (id) => {
+    const r = await api(`/api/group_meta?id=${encodeURIComponent(id)}`);
+    if (r.ok) return Number(r.body?.version || 0);
+    return 0;
+  };
+
   const onCreate=async()=>{
     if(!/^[A-Za-z0-9_-]{3,40}$/.test(gid)){alert("ชื่อกรุ๊ปไม่ถูกต้อง");return;}
     if(!gpass){alert("ใส่รหัสกรุ๊ป");return;}
     const r=await api("/api/group",{method:"POST",body:jp({id:gid,pass:gpass})});
-    if(r.status===201){ setStore(s=>({...s,settings:{...s.settings,group:{id:gid,pass:gpass}}})); alert("สร้างกรุ๊ปแล้ว"); }
+    if(r.status===201){ await saveJoin(); alert("สร้างกรุ๊ปแล้ว และเข้าร่วมเรียบร้อย"); }
     else if(r.status===409){ alert("ชื่อกรุ๊ปนี้ถูกใช้แล้ว"); }
     else { alert("สร้างไม่สำเร็จ: "+(r.body?.error||r.status)); }
   };
 
+  const saveJoin = async ()=>{
+    setStore(s=>({...s,settings:{...s.settings,group:{id:gid,pass:gpass}}}));
+    const ver = await fetchMeta(gid);
+    setLastVersion(ver || 0);
+    await onPull();
+  };
+
+  const sanitizePatient = (p)=>{ const {__groupId, ...rest} = p; return rest; };
+  const sanitizeNote = (n)=>{ const {__groupId, ...rest} = n; return rest; };
+
   const buildSubset = ()=>{
     const ids = Array.from(sel);
-    const patients = store.patients.filter(p=>ids.includes(p.id));
-    const notes = store.notes.filter(n=>ids.includes(n.patientId));
+    const patients = store.patients.filter(p=>ids.includes(p.id)).map(sanitizePatient);
+    const notes = store.notes.filter(n=>ids.includes(n.patientId)).map(sanitizeNote);
     return { mode:"merge", version:1, updatedAt: nowISO(), patients, notes };
   }
 
@@ -331,14 +344,27 @@ function GroupSharePanel({ store, setStore, passphrase }){
     const payload=(store.settings.encryptionEnabled && passphrase)
       ? aesEncrypt(jp(subset), passphrase)
       : subset;
+
+    const meta = await api(`/api/group_meta?id=${encodeURIComponent(gid)}`);
+    const baseVersion = meta.ok ? Number(meta.body?.version||0) : 0;
+
     const r=await api(`/api/group?id=${encodeURIComponent(gid)}`,{
       method:"PUT",
       headers:{"x-pass":gpass},
-      body:jp({version:1,payload}),
+      body:jp({version:1, baseVersion, payload}),
     });
+    if(r.status===409){
+      await onPull();
+      alert("มีคนอัปเดตก่อนคุณ — ดึงข้อมูลล่าสุดมารวมแล้ว ลองกดอัปเดตอีกครั้ง");
+      return;
+    }
     if(!r.ok){ alert("อัปเดตไม่สำเร็จ: "+(r.body?.error||r.status)); return; }
-    alert("อัปเดต (แชร์เฉพาะผู้ป่วยที่เลือก) สำเร็จ");
+    const newVer = Number(r.body?.version||0);
+    if(newVer) setLastVersion(newVer);
+    alert("อัปเดต (แชร์เฉพาะที่เลือก) สำเร็จ");
   };
+
+  const tagIncoming = (arr)=> (arr||[]).map(x=> ({...x, __groupId: gid}));
 
   const onPull=async()=>{
     if(!gid||!gpass){alert("ตั้งชื่อและรหัสก่อน");return;}
@@ -350,26 +376,62 @@ function GroupSharePanel({ store, setStore, passphrase }){
       if(!passphrase){alert("ข้อมูลถูกเข้ารหัส — ตั้งรหัสใน Settings ก่อน");return;}
       const s=aesDecrypt(pl, passphrase); if(!s){alert("ถอดรหัสไม่สำเร็จ");return;}
       const incoming=parse(s); if(!incoming){alert("payload ไม่ถูกต้อง");return;}
-      const { merged, stats } = mergeState(store, incoming.data? incoming.data : incoming);
+      const data = incoming.data? incoming.data : incoming;
+      const tagged = { patients: tagIncoming(data.patients), notes: tagIncoming(data.notes) };
+      const { merged } = mergeState(store, tagged);
       setStore(merged);
-      alert(`ดึงและ MERGE แล้ว: +${stats.newPatients} คนไข้, อัปเดต ${stats.updatedPatients}; โน้ต +${stats.newNotes}, อัปเดต ${stats.updatedNotes}`);
+      setLastVersion(Number(r.body?.version||0));
       return;
     }
 
     let incoming = null;
     if(pl?.mode==="merge" && (pl.patients||pl.notes)){
-      incoming = { patients: pl.patients||[], notes: pl.notes||[] };
+      incoming = { patients: tagIncoming(pl.patients||[]), notes: tagIncoming(pl.notes||[]) };
     }else if(pl?.patients && pl?.notes){
-      incoming = { patients: pl.patients, notes: pl.notes };
+      incoming = { patients: tagIncoming(pl.patients), notes: tagIncoming(pl.notes) };
     }else if(pl?.data && pl.data.patients && pl.data.notes){
-      incoming = { patients: pl.data.patients, notes: pl.data.notes };
+      incoming = { patients: tagIncoming(pl.data.patients), notes: tagIncoming(pl.data.notes) };
     }
     if(!incoming){ alert("payload ไม่ถูกต้อง"); return; }
 
-    const { merged, stats } = mergeState(store, incoming);
+    const { merged } = mergeState(store, incoming);
     setStore(merged);
-    alert(`MERGE แล้ว: +${stats.newPatients} คนไข้, อัปเดต ${stats.updatedPatients}; โน้ต +${stats.newNotes}, อัปเดต ${stats.updatedNotes}`);
+    setLastVersion(Number(r.body?.version||0));
   };
+
+  // Leave group (keep data) and Leave+Purge (remove local data from this group)
+  const leaveKeep = ()=>{
+    setStore(s=>({...s, settings:{...s.settings, group:{id:"", pass:""}}}));
+    setGid(""); setGp(""); setLastVersion(0);
+    alert("ออกกลุ่มแล้ว (คงข้อมูลไว้ในเครื่อง)");
+  };
+  const leaveAndPurge = ()=>{
+    if(!gid){ alert("ยังไม่ได้อยู่ในกลุ่ม"); return; }
+    if(!confirm("ยืนยันออกกลุ่ม และลบข้อมูลที่ดึงมาจากกลุ่มนี้ทั้งหมด?")) return;
+    const gidNow = gid;
+    setStore(s=>{
+      const remainingPatients = s.patients.filter(p => p.__groupId !== gidNow);
+      const remainingIds = new Set(remainingPatients.map(p=>p.id));
+      const remainingNotes = s.notes.filter(n => n.__groupId !== gidNow && remainingIds.has(n.patientId));
+      return { ...s, patients: remainingPatients, notes: remainingNotes, settings:{...s.settings, group:{id:"", pass:""}} };
+    });
+    setGid(""); setGp(""); setLastVersion(0);
+    alert("ออกกลุ่มและลบข้อมูลจากกลุ่มแล้ว");
+  };
+
+  useEffect(()=>{
+    if(!gid) return;
+    let alive = true;
+    const tick = async ()=>{
+      const r = await api(`/api/group_meta?id=${encodeURIComponent(gid)}`);
+      const ver = Number(r.body?.version||0);
+      if(alive && r.ok && ver && ver !== lastVersion){
+        await onPull();
+      }
+    };
+    const t = setInterval(tick, 4000);
+    return ()=>{ alive = false; clearInterval(t); };
+  }, [gid, lastVersion, gpass]);
 
   return (
     <details className="relative">
@@ -385,6 +447,13 @@ function GroupSharePanel({ store, setStore, passphrase }){
         <div className="grid gap-2">
           <div><label className="text-xs text-neutral-500">ชื่อกรุ๊ป (a-z 0-9 _ -)</label><Input value={gid} onChange={e=>setGid(e.target.value)}/></div>
           <div><label className="text-xs text-neutral-500">รหัสกรุ๊ป</label><Input type="password" value={gpass} onChange={e=>setGp(e.target.value)}/></div>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <button className="px-3 py-2 rounded-xl bg-black text-white" onClick={onCreate}>สร้าง</button>
+          <button className="px-3 py-2 rounded-xl bg-white border" onClick={saveJoin}>บันทึก (เข้าร่วม+ดึง)</button>
+          <button className="px-3 py-2 rounded-xl bg-white border" onClick={onPull}>ดึง (MERGE)</button>
+          <button className="px-3 py-2 rounded-xl bg-white border" onClick={onPush}>อัปเดต (แชร์เฉพาะที่เลือก)</button>
         </div>
 
         <div className="border rounded-xl p-3">
@@ -407,13 +476,12 @@ function GroupSharePanel({ store, setStore, passphrase }){
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-2">
-          <button className="px-3 py-2 rounded-xl bg-black text-white" onClick={onCreate}>สร้าง</button>
-          <button className="px-3 py-2 rounded-xl bg-white border" onClick={()=>setStore(s=>({...s,settings:{...s.settings,group:{id:gid,pass:gpass}}}))}>บันทึก</button>
-          <button className="px-3 py-2 rounded-xl bg-white border" onClick={onPull}>ดึง (MERGE)</button>
-          <button className="px-3 py-2 rounded-xl bg-white border" onClick={onPush}>อัปเดต (แชร์เฉพาะที่เลือก)</button>
+        <div className="grid sm:grid-cols-2 gap-2">
+          <button className="px-3 py-2 rounded-xl bg-white border" onClick={leaveKeep}>ออกกลุ่ม (คงข้อมูล)</button>
+          <button className="px-3 py-2 rounded-xl bg-red-600 text-white" onClick={leaveAndPurge}>ออก + ลบข้อมูลจากกลุ่ม</button>
         </div>
-        <div className="text-xs text-neutral-500">* เปิด AES ใน Settings เพื่อเข้ารหัส payload ก่อน Push ได้</div>
+
+        <div className="text-xs text-neutral-500">เวอร์ชันล่าสุดที่รู้จัก: {lastVersion||0}</div>
       </div>
     </details>
   );
@@ -451,7 +519,6 @@ function App(){
   const selPatient = useMemo(()=> state.patients.find(p=>p.id===sel)||null,[state.patients,sel]);
   const notesForSel = useMemo(()=> state.notes.filter(n=>n.patientId===sel).sort((a,b)=>b.timestamp.localeCompare(a.timestamp)), [state.notes, sel]);
 
-  // CRUD
   const addPatient=()=>{
     const id=uid();
     const p={id,name:"ผู้ป่วยใหม่",hn:"",sex:"",dob:"",color:"#22c55e",tags:[],cc:"",ud:"",hx:{},attachments:[],createdAt: nowISO(), updatedAt: nowISO()};
@@ -486,7 +553,7 @@ function App(){
   return (
     <div className="min-h-screen bg-neutral-50 pb-20">
       <header className="sticky top-0 bg-white border-b z-10">
-        <div className="max-w-6xl mx-auto px-3 py-2 flex items-center gap-2">
+        <div className="max-w-6xl mx:auto px-3 py-2 flex items-center gap-2">
           <h1 className="flex items-center gap-2 font-bold text-lg md:text-2xl shrink-0">
             <span>🗒️</span>
             <span className="sm:inline hidden">Progress Notes</span>
@@ -528,7 +595,7 @@ function App(){
                   value={pass}
                   onChange={e => setPass(e.target.value)}
                 />
-                <button className="px-3 py-2 rounded-xl bg-red-600 text-white w-full" onClick={wipe}>
+                <button className="px-3 py-2 rounded-xl bg-red-600 text:white w-full" onClick={wipe}>
                   ล้างข้อมูลทั้งหมด
                 </button>
               </div>
@@ -629,7 +696,7 @@ function App(){
 
       <footer className="max-w-6xl mx-auto px-2 sm:px-4 pb-24 md:pb-8 text-xs text-neutral-500">
         <p>⚠️ ข้อมูลเก็บบนอุปกรณ์ของคุณ (localStorage). เปิดเข้ารหัสก่อนใช้ข้อมูลจริง และปฏิบัติตาม PDPA.</p>
-        <p className="mt-1">เวอร์ชัน {APP_VERSION} • MERGE ไม่ทับไฟล์ • แชร์เลือกผู้ป่วยได้ • ส่วนหัวสวยบนมือถือ</p>
+        <p className="mt-1">เวอร์ชัน {APP_VERSION} • MERGE + Polling + 409 conflict • Leave group</p>
       </footer>
     </div>
   );

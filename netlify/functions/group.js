@@ -1,4 +1,4 @@
-// netlify/functions/group.js — blobs v8 JSON helpers
+// netlify/functions/group.js — blobs v8 JSON helpers + optimistic concurrency (409)
 import { getStore } from "@netlify/blobs";
 import crypto from "node:crypto";
 
@@ -69,8 +69,17 @@ export default async (req) => {
     if (req.method === "PUT") {
       let body = {}; try { body = await req.json(); } catch {}
       if (typeof body.payload === "undefined") return Response.json({ error: "Bad payload" }, { status: 400, headers: H });
-      await store.setJSON(`data:${id}`, { version: Number(body.version || 1), updatedAt: Date.now(), payload: body.payload });
-      return Response.json({ ok: true }, { headers: H });
+
+      const cur = await store.get(`data:${id}`, { type: "json" }) || { version: 1, updatedAt: Date.now(), payload: null };
+      const curVer = Number(cur.version || 1);
+      const base = Number(body.baseVersion ?? 0);
+      if (base && base !== curVer) {
+        return Response.json({ error: "VersionConflict", currentVersion: curVer }, { status: 409, headers: H });
+      }
+
+      const next = curVer + 1;
+      await store.setJSON(`data:${id}`, { version: next, updatedAt: Date.now(), payload: body.payload });
+      return Response.json({ ok: true, version: next }, { headers: H });
     }
 
     return Response.json({ error: "Method not allowed" }, { status: 405, headers: H });
